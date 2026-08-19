@@ -30,6 +30,11 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         status_code=exc.status_code,
     )
 
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    return JSONResponse({"safe": False, "reason": "INVALID_SCHEMA"})
+
 # ── constants ──────────────────────────────────────────────────────────────────
 VALID_CHANNELS = {"html", "markdown", "url", "sql", "shell"}
 ALLOWED_HOSTS  = {"cdn-aphsg5b.example", "app-2b0ft0g.example"}
