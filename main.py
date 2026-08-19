@@ -63,57 +63,48 @@ def clean_string(s: str) -> str:
 
 def decode_once(s: str) -> str:
     """
-    Decode iteratively until no more changes occur:
+    Decode in order (single pass only, per spec):
       1. percent-escapes  (%XX)
       2. HTML entities    (numeric &#NN; / &#xNN; and the five named ones)
       3. \\uXXXX escapes
     Return the resulting string (may equal the original if nothing changed).
     """
-    max_iterations = 10  # safety cap
-    current = s
-    
-    for _ in range(max_iterations):
-        # 1. percent-decode
+    # 1. percent-decode
+    try:
+        step1 = unquote(s, errors="replace")
+    except Exception:
+        step1 = s
+
+    # 2. numeric HTML entities  &#NN;  &#xNN;
+    def replace_numeric_entity(m: re.Match) -> str:
+        raw = m.group(1)
         try:
-            step1 = unquote(current, errors="replace")
-        except Exception:
-            step1 = current
+            if raw.startswith(("x", "X")):
+                cp = int(raw[1:], 16)   # strip leading x/X before hex parse
+            else:
+                cp = int(raw, 10)
+            return chr(cp)
+        except (ValueError, OverflowError):
+            return m.group(0)
 
-        # 2. numeric HTML entities  &#NN;  &#xNN;
-        def replace_numeric_entity(m: re.Match) -> str:
-            raw = m.group(1)
-            try:
-                if raw.startswith(("x", "X")):
-                    cp = int(raw[1:], 16)   # strip leading x/X before hex parse
-                else:
-                    cp = int(raw, 10)
-                return chr(cp)
-            except (ValueError, OverflowError):
-                return m.group(0)
+    step2 = re.sub(r"&#([xX][0-9a-fA-F]+|\d+);", replace_numeric_entity, step1)
 
-        step2 = re.sub(r"&#([xX][0-9a-fA-F]+|\d+);", replace_numeric_entity, step1)
+    # named entities (do &amp; last to avoid double-decoding)
+    # order matters: &amp; must come after the others
+    for entity, char in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'),
+                          ("&apos;", "'"), ("&amp;", "&")]:
+        step2 = step2.replace(entity, char)
 
-        # named entities (do &amp; last to avoid double-decoding)
-        # order matters: &amp; must come after the others
-        for entity, char in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'),
-                              ("&apos;", "'"), ("&amp;", "&")]:
-            step2 = step2.replace(entity, char)
+    # 3. \uXXXX escapes
+    def replace_unicode_escape(m: re.Match) -> str:
+        try:
+            return chr(int(m.group(1), 16))
+        except (ValueError, OverflowError):
+            return m.group(0)
 
-        # 3. \uXXXX escapes
-        def replace_unicode_escape(m: re.Match) -> str:
-            try:
-                return chr(int(m.group(1), 16))
-            except (ValueError, OverflowError):
-                return m.group(0)
+    step3 = re.sub(r"\\u([0-9a-fA-F]{4})", replace_unicode_escape, step2)
 
-        step3 = re.sub(r"\\u([0-9a-fA-F]{4})", replace_unicode_escape, step2)
-
-        # If no change, we're done
-        if step3 == current:
-            break
-        current = step3
-
-    return current
+    return step3
 
 
 # ── URL extraction helpers ─────────────────────────────────────────────────────
