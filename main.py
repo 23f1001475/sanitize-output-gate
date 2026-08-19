@@ -7,12 +7,20 @@ Allowed hosts: cdn-aphsg5b.example, app-2b0ft0g.example
 import re
 from urllib.parse import urlparse, unquote
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from typing import Any
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -301,6 +309,15 @@ CHANNEL_CHECKERS = {
 # ── main gate logic ────────────────────────────────────────────────────────────
 
 def sanitize(channel: str, output: str) -> dict:
+    if channel not in VALID_CHANNELS:
+        return {"safe": False, "reason": "INVALID_SCHEMA"}
+
+    if not isinstance(output, str):
+        return {"safe": False, "reason": "INVALID_SCHEMA"}
+
+    if len(output) > MAX_OUTPUT_LEN:
+        return {"safe": False, "reason": "INVALID_SCHEMA"}
+
     # Rule 2: ENCODED_PAYLOAD
     decoded = decode_once(output)
     if decoded != output:
