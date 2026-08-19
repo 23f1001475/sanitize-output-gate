@@ -159,7 +159,7 @@ def extract_markdown_urls(text: str) -> list[str]:
 
 # "optional whitespace before the colon"
 _DANGEROUS_SCHEME_RE = re.compile(
-    r"(?:javascript|data|vbscript)\s*:", re.IGNORECASE
+    r"\b(?:javascript|data|vbscript)\s*:", re.IGNORECASE
 )
 
 
