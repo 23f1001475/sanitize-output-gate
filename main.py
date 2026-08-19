@@ -115,7 +115,9 @@ _DANGEROUS_SCHEME_RE = re.compile(
 
 def is_dangerous_scheme_text(text: str) -> bool:
     """True if the raw text contains javascript:, data:, or vbscript: (with optional ws before :)."""
-    return bool(_DANGEROUS_SCHEME_RE.search(text))
+    # Strip null bytes and control characters that could be used to bypass detection
+    cleaned = "".join(c for c in text if c >= ' ' or c in '\t\n\r')
+    return bool(_DANGEROUS_SCHEME_RE.search(cleaned))
 
 
 def check_url(url: str) -> str | None:
@@ -161,20 +163,23 @@ def check_url(url: str) -> str | None:
 # ── channel rule implementations ──────────────────────────────────────────────
 
 def check_html(text: str) -> str | None:
+    # Strip null bytes and control characters (except tab, newline, carriage return which are valid HTML whitespace)
+    cleaned = "".join(c for c in text if c >= ' ' or c in '\t\n\r')
+    
     # 1. SCRIPT_TAG — opening <script>, <iframe>, <object>, <embed>
-    if re.search(r"<(?:script|iframe|object|embed)[\s>\/]", text, re.IGNORECASE):
+    if re.search(r"<(?:script|iframe|object|embed)[\s>\/]", cleaned, re.IGNORECASE):
         return "SCRIPT_TAG"
 
     # 2. EVENT_HANDLER — on…= attribute  (e.g. onload=, onclick=)
-    if re.search(r"\bon\w+\s*=", text, re.IGNORECASE):
+    if re.search(r"\bon\w+\s*=", cleaned, re.IGNORECASE):
         return "EVENT_HANDLER"
 
     # 3. DANGEROUS_SCHEME — raw text check (catches javascript: in href values etc.)
-    if is_dangerous_scheme_text(text):
+    if is_dangerous_scheme_text(cleaned):
         return "DANGEROUS_SCHEME"
 
     # 4. EXTERNAL_EXFIL — check extracted URLs
-    for url in extract_html_urls(text):
+    for url in extract_html_urls(cleaned):
         reason = check_url(url)
         if reason == "DANGEROUS_SCHEME":
             return "DANGEROUS_SCHEME"
@@ -185,12 +190,15 @@ def check_html(text: str) -> str | None:
 
 
 def check_markdown(text: str) -> str | None:
+    # Strip control characters that could bypass detection
+    cleaned = "".join(c for c in text if c >= ' ' or c in '\t\n\r')
+    
     # 1. DANGEROUS_SCHEME — raw text check
-    if is_dangerous_scheme_text(text):
+    if is_dangerous_scheme_text(cleaned):
         return "DANGEROUS_SCHEME"
 
     # 2. EXTERNAL_EXFIL — extracted URLs from ](…)
-    for url in extract_markdown_urls(text):
+    for url in extract_markdown_urls(cleaned):
         reason = check_url(url)
         if reason == "DANGEROUS_SCHEME":
             return "DANGEROUS_SCHEME"
@@ -201,7 +209,8 @@ def check_markdown(text: str) -> str | None:
 
 
 def check_url_channel(text: str) -> str | None:
-    url = text.strip()
+    # Strip control characters that could bypass detection
+    url = "".join(c for c in text.strip() if c >= ' ' or c in '\t\n\r')
     if not url:
         return None
 
@@ -224,13 +233,17 @@ _SHELL_METACHAR_RE = re.compile(
 
 
 def check_sql(text: str) -> str | None:
-    if _SQL_METACHAR_RE.search(text):
+    # Strip control characters that could bypass detection
+    cleaned = "".join(c for c in text if c >= ' ' or c in '\t\n\r')
+    if _SQL_METACHAR_RE.search(cleaned):
         return "SQL_METACHAR"
     return None
 
 
 def check_shell(text: str) -> str | None:
-    if _SHELL_METACHAR_RE.search(text):
+    # Strip control characters that could bypass detection
+    cleaned = "".join(c for c in text if c >= ' ' or c in '\t\n\r')
+    if _SHELL_METACHAR_RE.search(cleaned):
         return "SHELL_METACHAR"
     return None
 
