@@ -9,9 +9,18 @@ from urllib.parse import urlparse, unquote
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from typing import Any
 
 app = FastAPI()
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(
+        {"safe": False, "reason": "INVALID_SCHEMA"},
+        status_code=exc.status_code,
+    )
 
 # ── constants ──────────────────────────────────────────────────────────────────
 VALID_CHANNELS = {"html", "markdown", "url", "sql", "shell"}
@@ -321,6 +330,7 @@ def sanitize(channel: str, output: str) -> dict:
 # ── endpoint ───────────────────────────────────────────────────────────────────
 
 @app.post("/sanitize-output")
+@app.post("/sanitize-output/", include_in_schema=False)
 async def sanitize_output_endpoint(request: Request):
     try:
         body = await request.json()
