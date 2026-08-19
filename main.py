@@ -131,7 +131,20 @@ def extract_html_urls(text: str) -> list[str]:
 
 
 def extract_markdown_urls(text: str) -> list[str]:
-    return [m.group(1) for m in _MARKDOWN_URL_RE.finditer(text)]
+    urls = []
+    for m in _MARKDOWN_URL_RE.finditer(text):
+        url = m.group(1)
+        # Markdown allows titles: [text](url "title") or [text](url 'title')
+        # Strip the title part if present
+        url = url.strip()
+        # Remove title: anything after space followed by quote
+        if ' "' in url:
+            url = url.split(' "')[0]
+        elif " '" in url:
+            url = url.split(" '")[0]
+        if url:
+            urls.append(url)
+    return urls
 
 
 # ── scheme / host checks ───────────────────────────────────────────────────────
