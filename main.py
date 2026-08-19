@@ -1,0 +1,288 @@
+"""
+LLM Output Handling Gate (OWASP LLM05)
+POST /sanitize-output
+Allowed hosts: cdn-aphsg5b.example, app-2b0ft0g.example
+"""
+
+import re
+from urllib.parse import urlparse, unquote
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import Any
+
+app = FastAPI()
+
+# ── constants ──────────────────────────────────────────────────────────────────
+VALID_CHANNELS = {"html", "markdown", "url", "sql", "shell"}
+ALLOWED_HOSTS  = {"cdn-aphsg5b.example", "app-2b0ft0g.example"}
+MAX_OUTPUT_LEN = 20_000
+
+# Named HTML entities we must decode (spec lists exactly these five)
+HTML_ENTITIES = {
+    "&lt;":   "<",
+    "&gt;":   ">",
+    "&quot;": '"',
+    "&apos;": "'",
+    "&amp;":  "&",
+}
+
+
+# ── decoding helpers ───────────────────────────────────────────────────────────
+
+def decode_once(s: str) -> str:
+    """
+    Decode in order:
+      1. percent-escapes  (%XX)
+      2. HTML entities    (numeric &#NN; / &#xNN; and the five named ones)
+      3. \\uXXXX escapes
+    Return the resulting string (may equal the original if nothing changed).
+    """
+    # 1. percent-decode
+    try:
+        step1 = unquote(s, errors="replace")
+    except Exception:
+        step1 = s
+
+    # 2. numeric HTML entities  &#NN;  &#xNN;
+    def replace_numeric_entity(m: re.Match) -> str:
+        raw = m.group(1)
+        try:
+            if raw.startswith(("x", "X")):
+                cp = int(raw[1:], 16)   # strip leading x/X before hex parse
+            else:
+                cp = int(raw, 10)
+            return chr(cp)
+        except (ValueError, OverflowError):
+            return m.group(0)
+
+    step2 = re.sub(r"&#([xX][0-9a-fA-F]+|\d+);", replace_numeric_entity, step1)
+
+    # named entities (do &amp; last to avoid double-decoding)
+    # order matters: &amp; must come after the others
+    for entity, char in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'),
+                          ("&apos;", "'"), ("&amp;", "&")]:
+        step2 = step2.replace(entity, char)
+
+    # 3. \uXXXX escapes
+    def replace_unicode_escape(m: re.Match) -> str:
+        try:
+            return chr(int(m.group(1), 16))
+        except (ValueError, OverflowError):
+            return m.group(0)
+
+    step3 = re.sub(r"\\u([0-9a-fA-F]{4})", replace_unicode_escape, step2)
+
+    return step3
+
+
+# ── URL extraction helpers ─────────────────────────────────────────────────────
+
+# matches both double-quoted and single-quoted attribute values
+_HTML_URL_RE = re.compile(
+    r"""(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')""",
+    re.IGNORECASE,
+)
+
+_MARKDOWN_URL_RE = re.compile(r"""\]\(([^)]*)\)""")
+
+
+def extract_html_urls(text: str) -> list[str]:
+    return [m.group(1) if m.group(1) is not None else m.group(2)
+            for m in _HTML_URL_RE.finditer(text)]
+
+
+def extract_markdown_urls(text: str) -> list[str]:
+    return [m.group(1) for m in _MARKDOWN_URL_RE.finditer(text)]
+
+
+# ── scheme / host checks ───────────────────────────────────────────────────────
+
+# "optional whitespace before the colon"
+_DANGEROUS_SCHEME_RE = re.compile(
+    r"(?:javascript|data|vbscript)\s*:", re.IGNORECASE
+)
+
+
+def is_dangerous_scheme_text(text: str) -> bool:
+    """True if the raw text contains javascript:, data:, or vbscript: (with optional ws before :)."""
+    return bool(_DANGEROUS_SCHEME_RE.search(text))
+
+
+def check_url(url: str) -> str | None:
+    """
+    Return a reason code if the URL is problematic, else None.
+    Checks:
+      - DANGEROUS_SCHEME  (scheme != http / https, or known bad keyword)
+      - EXTERNAL_EXFIL    (hostname not in ALLOWED_HOSTS)
+    Relative URLs (no scheme, no //) → None (safe).
+    Protocol-relative //host/path    → treated as https://host/path.
+    """
+    url = url.strip()
+    if not url:
+        return None
+
+    # protocol-relative
+    if url.startswith("//"):
+        url = "https:" + url
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+
+    scheme = parsed.scheme.lower()
+
+    # No scheme → relative reference → safe
+    if not scheme:
+        return None
+
+    # Bad scheme
+    if scheme not in ("http", "https"):
+        return "DANGEROUS_SCHEME"
+
+    # Hostname check — use parsed.hostname (strips port and lowercases)
+    hostname = parsed.hostname or ""
+    if hostname not in ALLOWED_HOSTS:
+        return "EXTERNAL_EXFIL"
+
+    return None
+
+
+# ── channel rule implementations ──────────────────────────────────────────────
+
+def check_html(text: str) -> str | None:
+    # 1. SCRIPT_TAG — opening <script>, <iframe>, <object>, <embed>
+    if re.search(r"<\s*(?:script|iframe|object|embed)[\s>\/]", text, re.IGNORECASE):
+        return "SCRIPT_TAG"
+
+    # 2. EVENT_HANDLER — on…= attribute  (e.g. onload=, onclick=)
+    if re.search(r"\bon\w+\s*=", text, re.IGNORECASE):
+        return "EVENT_HANDLER"
+
+    # 3. DANGEROUS_SCHEME — raw text check (catches javascript: in href values etc.)
+    if is_dangerous_scheme_text(text):
+        return "DANGEROUS_SCHEME"
+
+    # 4. EXTERNAL_EXFIL — check extracted URLs
+    for url in extract_html_urls(text):
+        reason = check_url(url)
+        if reason == "DANGEROUS_SCHEME":
+            return "DANGEROUS_SCHEME"
+        if reason == "EXTERNAL_EXFIL":
+            return "EXTERNAL_EXFIL"
+
+    return None
+
+
+def check_markdown(text: str) -> str | None:
+    # 1. DANGEROUS_SCHEME — raw text check
+    if is_dangerous_scheme_text(text):
+        return "DANGEROUS_SCHEME"
+
+    # 2. EXTERNAL_EXFIL — extracted URLs from ](…)
+    for url in extract_markdown_urls(text):
+        reason = check_url(url)
+        if reason == "DANGEROUS_SCHEME":
+            return "DANGEROUS_SCHEME"
+        if reason == "EXTERNAL_EXFIL":
+            return "EXTERNAL_EXFIL"
+
+    return None
+
+
+def check_url_channel(text: str) -> str | None:
+    url = text.strip()
+    if not url:
+        return None
+
+    # raw text dangerous scheme check first
+    if is_dangerous_scheme_text(url):
+        return "DANGEROUS_SCHEME"
+
+    reason = check_url(url)
+    return reason  # None, DANGEROUS_SCHEME, or EXTERNAL_EXFIL
+
+
+_SQL_METACHAR_RE = re.compile(
+    r"""'|"|;|--|/\*|\bunion\b|or\s+1\s*=\s*1""",
+    re.IGNORECASE,
+)
+
+_SHELL_METACHAR_RE = re.compile(
+    r"[;&|`<>]|\$\(|\$\{",
+)
+
+
+def check_sql(text: str) -> str | None:
+    if _SQL_METACHAR_RE.search(text):
+        return "SQL_METACHAR"
+    return None
+
+
+def check_shell(text: str) -> str | None:
+    if _SHELL_METACHAR_RE.search(text):
+        return "SHELL_METACHAR"
+    return None
+
+
+CHANNEL_CHECKERS = {
+    "html":     check_html,
+    "markdown": check_markdown,
+    "url":      check_url_channel,
+    "sql":      check_sql,
+    "shell":    check_shell,
+}
+
+
+# ── main gate logic ────────────────────────────────────────────────────────────
+
+def sanitize(channel: str, output: str) -> dict:
+    # Rule 2: ENCODED_PAYLOAD
+    decoded = decode_once(output)
+    if decoded != output:
+        # Run all channel rules against the decoded string
+        reason = CHANNEL_CHECKERS[channel](decoded)
+        if reason:
+            return {"safe": False, "reason": "ENCODED_PAYLOAD"}
+
+    # Rules 3+: apply channel rules to the ORIGINAL output
+    reason = CHANNEL_CHECKERS[channel](output)
+    if reason:
+        return {"safe": False, "reason": reason}
+
+    return {"safe": True, "reason": "SAFE"}
+
+
+# ── endpoint ───────────────────────────────────────────────────────────────────
+
+@app.post("/sanitize-output")
+async def sanitize_output_endpoint(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"safe": False, "reason": "INVALID_SCHEMA"})
+
+    # Rule 1: INVALID_SCHEMA
+    if not isinstance(body, dict):
+        return JSONResponse({"safe": False, "reason": "INVALID_SCHEMA"})
+
+    channel = body.get("channel")
+    output  = body.get("output")
+
+    if channel not in VALID_CHANNELS:
+        return JSONResponse({"safe": False, "reason": "INVALID_SCHEMA"})
+
+    if not isinstance(output, str):
+        return JSONResponse({"safe": False, "reason": "INVALID_SCHEMA"})
+
+    if len(output) > MAX_OUTPUT_LEN:
+        return JSONResponse({"safe": False, "reason": "INVALID_SCHEMA"})
+
+    result = sanitize(channel, output)
+    return JSONResponse(result)
+
+
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "sanitize-output gate"}
