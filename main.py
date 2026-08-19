@@ -32,55 +32,64 @@ HTML_ENTITIES = {
 
 def decode_once(s: str) -> str:
     """
-    Decode in order:
+    Decode iteratively until no more changes occur:
       1. percent-escapes  (%XX)
       2. HTML entities    (numeric &#NN; / &#xNN; and the five named ones)
       3. \\uXXXX escapes
     Return the resulting string (may equal the original if nothing changed).
     """
-    # 1. percent-decode
-    try:
-        step1 = unquote(s, errors="replace")
-    except Exception:
-        step1 = s
-
-    # 2. numeric HTML entities  &#NN;  &#xNN;
-    def replace_numeric_entity(m: re.Match) -> str:
-        raw = m.group(1)
+    max_iterations = 10  # safety cap
+    current = s
+    
+    for _ in range(max_iterations):
+        # 1. percent-decode
         try:
-            if raw.startswith(("x", "X")):
-                cp = int(raw[1:], 16)   # strip leading x/X before hex parse
-            else:
-                cp = int(raw, 10)
-            return chr(cp)
-        except (ValueError, OverflowError):
-            return m.group(0)
+            step1 = unquote(current, errors="replace")
+        except Exception:
+            step1 = current
 
-    step2 = re.sub(r"&#([xX][0-9a-fA-F]+|\d+);", replace_numeric_entity, step1)
+        # 2. numeric HTML entities  &#NN;  &#xNN;
+        def replace_numeric_entity(m: re.Match) -> str:
+            raw = m.group(1)
+            try:
+                if raw.startswith(("x", "X")):
+                    cp = int(raw[1:], 16)   # strip leading x/X before hex parse
+                else:
+                    cp = int(raw, 10)
+                return chr(cp)
+            except (ValueError, OverflowError):
+                return m.group(0)
 
-    # named entities (do &amp; last to avoid double-decoding)
-    # order matters: &amp; must come after the others
-    for entity, char in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'),
-                          ("&apos;", "'"), ("&amp;", "&")]:
-        step2 = step2.replace(entity, char)
+        step2 = re.sub(r"&#([xX][0-9a-fA-F]+|\d+);", replace_numeric_entity, step1)
 
-    # 3. \uXXXX escapes
-    def replace_unicode_escape(m: re.Match) -> str:
-        try:
-            return chr(int(m.group(1), 16))
-        except (ValueError, OverflowError):
-            return m.group(0)
+        # named entities (do &amp; last to avoid double-decoding)
+        # order matters: &amp; must come after the others
+        for entity, char in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'),
+                              ("&apos;", "'"), ("&amp;", "&")]:
+            step2 = step2.replace(entity, char)
 
-    step3 = re.sub(r"\\u([0-9a-fA-F]{4})", replace_unicode_escape, step2)
+        # 3. \uXXXX escapes
+        def replace_unicode_escape(m: re.Match) -> str:
+            try:
+                return chr(int(m.group(1), 16))
+            except (ValueError, OverflowError):
+                return m.group(0)
 
-    return step3
+        step3 = re.sub(r"\\u([0-9a-fA-F]{4})", replace_unicode_escape, step2)
+
+        # If no change, we're done
+        if step3 == current:
+            break
+        current = step3
+
+    return current
 
 
 # ── URL extraction helpers ─────────────────────────────────────────────────────
 
 # matches both double-quoted and single-quoted attribute values
 _HTML_URL_RE = re.compile(
-    r"""(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')""",
+    r"""(?:src|href|action)\s*=\s*(?:"([^"]*)"|'([^']*)')""",
     re.IGNORECASE,
 )
 
@@ -153,7 +162,7 @@ def check_url(url: str) -> str | None:
 
 def check_html(text: str) -> str | None:
     # 1. SCRIPT_TAG — opening <script>, <iframe>, <object>, <embed>
-    if re.search(r"<\s*(?:script|iframe|object|embed)[\s>\/]", text, re.IGNORECASE):
+    if re.search(r"<(?:script|iframe|object|embed)[\s>\/]", text, re.IGNORECASE):
         return "SCRIPT_TAG"
 
     # 2. EVENT_HANDLER — on…= attribute  (e.g. onload=, onclick=)
@@ -210,7 +219,7 @@ _SQL_METACHAR_RE = re.compile(
 )
 
 _SHELL_METACHAR_RE = re.compile(
-    r"[;&|`<>]|\$\(|\$\{",
+    r"[;&|`<>\n\r]|\$\(|\$\{",
 )
 
 
