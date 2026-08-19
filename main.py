@@ -30,6 +30,28 @@ HTML_ENTITIES = {
 
 # ── decoding helpers ───────────────────────────────────────────────────────────
 
+def clean_string(s: str) -> str:
+    """
+    Remove characters that could be used to bypass detection:
+    - Control characters (except tab, newline, carriage return which are valid whitespace)
+    - Zero-width characters (\u200b, \u200c, \u200d, \ufeff, etc.)
+    - Other format characters that don't visually render
+    """
+    result = []
+    for c in s:
+        code = ord(c)
+        # Keep normal printable chars, tab, newline, carriage return
+        if c >= ' ' or c in '\t\n\r':
+            # Exclude zero-width and other invisible Unicode chars
+            # Zero-width space (200B), zero-width non-joiner (200C), zero-width joiner (200D)
+            # Zero-width no-break space/BOM (FEFF), Word joiner (2060), etc.
+            if code not in (0x200B, 0x200C, 0x200D, 0xFEFF, 0x2060, 0x180E):
+                # Also exclude other format characters (Cf category covers more)
+                # But for performance, just check common bypass chars
+                result.append(c)
+    return ''.join(result)
+
+
 def decode_once(s: str) -> str:
     """
     Decode iteratively until no more changes occur:
@@ -122,8 +144,8 @@ _DANGEROUS_SCHEME_RE = re.compile(
 
 def is_dangerous_scheme_text(text: str) -> bool:
     """True if the raw text contains javascript:, data:, or vbscript: (with optional ws before :)."""
-    # Strip null bytes and control characters that could be used to bypass detection
-    cleaned = "".join(c for c in text if c >= ' ' or c in '\t\n\r')
+    # Clean string to remove bypass characters
+    cleaned = clean_string(text)
     return bool(_DANGEROUS_SCHEME_RE.search(cleaned))
 
 
@@ -170,8 +192,8 @@ def check_url(url: str) -> str | None:
 # ── channel rule implementations ──────────────────────────────────────────────
 
 def check_html(text: str) -> str | None:
-    # Strip null bytes and control characters (except tab, newline, carriage return which are valid HTML whitespace)
-    cleaned = "".join(c for c in text if c >= ' ' or c in '\t\n\r')
+    # Clean string to remove bypass characters
+    cleaned = clean_string(text)
     
     # 1. SCRIPT_TAG — opening <script>, <iframe>, <object>, <embed>
     if re.search(r"<(?:script|iframe|object|embed)[\s>\/]", cleaned, re.IGNORECASE):
@@ -197,8 +219,8 @@ def check_html(text: str) -> str | None:
 
 
 def check_markdown(text: str) -> str | None:
-    # Strip control characters that could bypass detection
-    cleaned = "".join(c for c in text if c >= ' ' or c in '\t\n\r')
+    # Clean string to remove bypass characters
+    cleaned = clean_string(text)
     
     # 1. DANGEROUS_SCHEME — raw text check
     if is_dangerous_scheme_text(cleaned):
@@ -216,8 +238,8 @@ def check_markdown(text: str) -> str | None:
 
 
 def check_url_channel(text: str) -> str | None:
-    # Strip control characters that could bypass detection
-    url = "".join(c for c in text.strip() if c >= ' ' or c in '\t\n\r')
+    # Clean string to remove bypass characters
+    url = clean_string(text.strip())
     if not url:
         return None
 
@@ -240,16 +262,16 @@ _SHELL_METACHAR_RE = re.compile(
 
 
 def check_sql(text: str) -> str | None:
-    # Strip control characters that could bypass detection
-    cleaned = "".join(c for c in text if c >= ' ' or c in '\t\n\r')
+    # Clean string to remove bypass characters
+    cleaned = clean_string(text)
     if _SQL_METACHAR_RE.search(cleaned):
         return "SQL_METACHAR"
     return None
 
 
 def check_shell(text: str) -> str | None:
-    # Strip control characters that could bypass detection
-    cleaned = "".join(c for c in text if c >= ' ' or c in '\t\n\r')
+    # Clean string to remove bypass characters
+    cleaned = clean_string(text)
     if _SHELL_METACHAR_RE.search(cleaned):
         return "SHELL_METACHAR"
     return None
