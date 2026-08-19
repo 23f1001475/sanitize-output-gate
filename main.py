@@ -118,11 +118,10 @@ def decode_once(s: str) -> str:
 
 # ── URL extraction helpers ─────────────────────────────────────────────────────
 
-# matches both double-quoted, single-quoted, and unquoted attribute values
-# Requires whitespace or < before attribute to avoid matching data-src, etc.
-# Includes formaction (needs to come before action to match properly)
+# matches quoted src= and href= attributes only (per spec)
+# Requires whitespace or < before attribute
 _HTML_URL_RE = re.compile(
-    r"""(?:[\s<])(?:formaction|src|href|action)\s*=\s*(?:"([^"<>]*)"|'([^'<>]*)'|([^\s<>'"]+))""",
+    r"""(?:[\s<])(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')""",
     re.IGNORECASE,
 )
 
@@ -132,8 +131,8 @@ _MARKDOWN_URL_RE = re.compile(r"""\]\(([^)]*)\)""")
 def extract_html_urls(text: str) -> list[str]:
     urls = []
     for m in _HTML_URL_RE.finditer(text):
-        # group 1: double-quoted, group 2: single-quoted, group 3: unquoted
-        url = m.group(1) or m.group(2) or m.group(3)
+        # group 1: double-quoted, group 2: single-quoted
+        url = m.group(1) or m.group(2)
         if url:
             urls.append(url)
     return urls
